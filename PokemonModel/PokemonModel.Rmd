@@ -1,0 +1,364 @@
+---
+title: "PokemonModel"
+author: "Max Brill"
+date: "11/12/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r}
+library(lmtest)
+library(aod)
+library(VGAM)
+library(class)
+library(caret)
+library(gmodels)
+library(neuralnet)
+library(C50)
+library(fastDummies)
+library(data.table)
+library(dtwclust)
+```
+
+##This was completed for a class project in which we had to create a model to predict whether a pokemon was "legendary" or not. The dataset was provided by our professor.
+
+For your reference, my interpretation is at the very bottom of this HTML file.
+
+```{r}
+pokemon <- read.csv("pokemon.csv")
+
+str(pokemon)
+
+#Cleaning Data
+#Getting rid of against_type columns (they are not going to be statistically significant in predicting legendary status)
+#Also getting rid of categorical variables with many categories such as names and abilities
+
+pokemon$abilities <- NULL
+pokemon$against_bug <- NULL
+pokemon$against_dark <- NULL
+pokemon$against_dragon <- NULL
+pokemon$against_electric <- NULL
+pokemon$against_fairy <- NULL
+pokemon$against_fight <- NULL
+pokemon$against_fire <- NULL
+pokemon$against_flying <- NULL
+pokemon$against_ghost <- NULL
+pokemon$against_grass <- NULL
+pokemon$against_ground <- NULL
+pokemon$against_ice <- NULL
+pokemon$against_normal <- NULL
+pokemon$against_poison <- NULL
+pokemon$against_psychic <- NULL
+pokemon$against_rock <- NULL
+pokemon$against_steel <- NULL
+pokemon$against_water <- NULL
+pokemon$japanese_name  <- NULL
+pokemon$name <- NULL
+pokemon$pokedex_number <- NULL
+pokemon$classfication <- NULL
+pokemon$generation <- NULL
+
+#Setting capture rate and HP to numeric variables
+
+pokemon$capture_rate <- as.numeric(pokemon$capture_rate)
+pokemon$hp <- as.numeric(pokemon$hp)
+
+#Setting pokemon with height_m = NA and weight_kg to average height and weight 
+
+pokemon$height_m[is.na(pokemon$height_m)] <- mean(pokemon$height_m, na.rm = TRUE)
+pokemon$weight_kg[is.na(pokemon$weight_kg)] <- mean(pokemon$weight_kg, na.rm = TRUE)
+
+#Setting pokemon with percentage_male = NA to -1 (pokemon that have NA percentage male are genderless, which does have an affect on legendary status)
+
+pokemon$percentage_male[is.na(pokemon$percentage_male)] <- -1
+
+#Creating Dummy Columns for Type1 and Type2 columns
+
+type1_dummy <- dummy_cols(pokemon$type1)
+type2_dummy <- dummy_cols(pokemon$type2)
+
+type1_dummy_factors <- lapply(type1_dummy, as.factor)
+type2_dummy_factors <- lapply(type2_dummy, as.factor)
+type1_dummy_numeric <- lapply(type1_dummy, as.numeric)
+type2_dummy_numeric <- lapply(type2_dummy, as.numeric)
+
+pokemon_norm_ann <- pokemon
+pokemon <- data.frame(pokemon, type1_dummy_factors, type2_dummy_factors)
+
+pokemon$type1 <- NULL
+pokemon$type2 <- NULL
+pokemon$.data <- NULL
+pokemon$.data.1 <- NULL
+pokemon$.data_ <- NULL
+
+#Creating ANN data with dummy variables as numeric variables instead of factors
+
+pokemon_norm_ann <- data.frame(pokemon_norm_ann, type1_dummy_numeric, type2_dummy_numeric)
+pokemon_norm_ann$type1 <- NULL
+pokemon_norm_ann$type2 <- NULL
+pokemon_norm_ann$.data <- NULL
+pokemon_norm_ann$.data.1 <- NULL
+pokemon_norm_ann$.data_ <- NULL
+
+#Cleaning up column names
+
+oldnames <- c(".data_bug", 
+              ".data_dark",
+              ".data_dragon",
+              ".data_electric",
+              ".data_fairy",
+              ".data_fighting",
+              ".data_fire",
+              ".data_flying",
+              ".data_ghost",
+              ".data_grass",
+              ".data_ground",
+              ".data_ice",
+              ".data_normal",
+              ".data_poison",
+              ".data_psychic",
+              ".data_rock",
+              ".data_steel",
+              ".data_water",
+              ".data_bug.1", 
+              ".data_dark.1",
+              ".data_dragon.1",
+              ".data_electric.1",
+              ".data_fairy.1",
+              ".data_fighting.1",
+              ".data_fire.1",
+              ".data_flying.1",
+              ".data_ghost.1",
+              ".data_grass.1",
+              ".data_ground.1",
+              ".data_ice.1",
+              ".data_normal.1",
+              ".data_poison.1",
+              ".data_psychic.1",
+              ".data_rock.1",
+              ".data_steel.1",
+              ".data_water.1")
+
+newnames <- c("type1_bug",
+              "type1_dark",
+              "type1_dragon",
+              "type1_electric",
+              "type1_fairy",
+              "type1_fighting",
+              "type1_fire",
+              "type1_flying",
+              "type1_ghost",
+              "type1_grass",
+              "type1_ground",
+              "type1_ice",
+              "type1_normal",
+              "type1_poison",
+              "type1_psychic",
+              "type1_rock",
+              "type1_steel",
+              "type1_water",
+              "type2_bug",
+              "type2_dark",
+              "type2_dragon",
+              "type2_electric",
+              "type2_fairy",
+              "type2_fighting",
+              "type2_fire",
+              "type2_flying",
+              "type2_ghost",
+              "type2_grass",
+              "type2_ground",
+              "type2_ice",
+              "type2_normal",
+              "type2_poison",
+              "type2_psychic",
+              "type2_rock",
+              "type2_steel",
+              "type2_water")
+
+setnames(pokemon, old = oldnames, new = newnames)
+setnames(pokemon_norm_ann, old = oldnames, new = newnames)
+
+#Randomizing the Data
+
+set.seed(1234)
+
+pokemon <- pokemon[sample(1:nrow(pokemon), nrow(pokemon)),]
+pokemon_norm_ann <- pokemon_norm_ann[sample(1:nrow(pokemon_norm_ann), nrow(pokemon_norm_ann)),]
+
+#Normalize Function
+
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+#Normalizing numerical columns
+
+norm_variables <- as.data.frame(lapply(pokemon[,c('attack', 'base_egg_steps', 'base_happiness', 
+                                                  'base_total', 'capture_rate', 'defense', 'experience_growth', 
+                                                  'height_m', 'hp', 'percentage_male', 'sp_attack', 'sp_defense', 
+                                                  'speed', 'weight_kg')], normalize))
+
+#Combining Normalized columns with dummy columns into final data frame
+
+pokemon_norm <- data.frame(norm_variables, pokemon[15:51])
+pokemon_norm_ann <- data.frame(norm_variables, pokemon_norm_ann[15:51])
+
+pokemon_norm$is_legendary <- as.factor(pokemon_norm$is_legendary)
+pokemon_norm_ann$is_legendary <- as.factor(pokemon_norm_ann$is_legendary) 
+
+#KNN data frame without response variable 
+
+pokemon_norm_knn <- pokemon_norm[-15]
+```
+
+```{r}
+#LOGISTIC MODEL
+
+str(pokemon_norm)
+
+#Building Logistic model without variables that throw a fitted probabilities error (found this by trial and error below)
+
+logit_model1 <- glm(is_legendary ~ . -type1_fire -type1_normal -type1_poison -type1_psychic
+                                    -type2_bug - type2_dark -type2_ghost -type2_poison 
+                                    -type2_psychic -type2_steel,
+                    data = pokemon_norm, family = "binomial")
+
+#logit_model1 <- glm(is_legendary ~ attack + base_egg_steps + base_happiness + base_total + capture_rate  +defense +experience_growth + height_m + hp + percentage_male + sp_attack + sp_defense + speed + weight_kg + type1_bug + type1_dark + type1_dragon + type1_electric + type1_fairy + type1_fighting + type1_flying + type1_ghost + type1_grass + type1_ground + type1_ice + type1_rock + type1_steel + type1_water + type2_dragon + type2_electric + type2_fairy + type2_fighting + type2_fire + type2_flying + type2_grass + type2_ground + type2_ice + type2_normal + type2_rock + type2_water, data = pokemon_norm, family = "binomial")
+
+summary(logit_model1)
+
+logit_predict <- predict(logit_model1, data = pokemon_norm, type = "response")
+
+logit_predict <- as.factor(ifelse(logit_predict > 0.5, 1, 0))
+
+log_confusion <- confusionMatrix(logit_predict, pokemon_norm$is_legendary)
+
+#KNN MODEL 
+
+#Setting K and rounding up if it is an even number
+k = round(sqrt(nrow(pokemon_norm_knn)))
+
+if(k %% 2 == 0){
+  k <- k + 1
+  }
+
+knn_model1 <- knn(train = pokemon_norm_knn, test = pokemon_norm_knn,
+                      cl = pokemon_norm$is_legendary, k = k)
+
+summary(knn_model1)
+
+knn_confusion1 <- confusionMatrix(knn_model1, pokemon_norm$is_legendary)
+
+#Trying to improve model performance by using Z-score normalization instead of MinMax Normalization:
+
+knn_norm_variables <- as.data.frame(lapply(pokemon[,c('attack', 'base_egg_steps', 'base_happiness', 
+                                                      'base_total', 'capture_rate', 'defense', 'experience_growth', 
+                                                      'height_m', 'hp', 'percentage_male', 'sp_attack', 'sp_defense', 
+                                                      'speed', 'weight_kg')], zscore))
+
+pokemon_norm_knn <- data.frame(knn_norm_variables, pokemon[15:51])
+
+pokemon_norm_knn <- pokemon_norm_knn[-15]
+
+#Re-running model with Z-score normalization: 
+
+knn_model2 <- knn(train = pokemon_norm_knn, test = pokemon_norm_knn,
+                      cl = pokemon_norm$is_legendary, k = k)
+
+summary(knn_model2)
+
+knn_confusion2 <- confusionMatrix(knn_model2, pokemon_norm$is_legendary)
+
+#Z-Score normalization works much better for KNN! 
+
+#ANN MODEL
+
+pokemon_norm_ann$is_legendary <- as.numeric(as.character(pokemon_norm$is_legendary))
+
+ann_model1 <- neuralnet(is_legendary ~ ., data = pokemon_norm_ann, hidden = 2)
+
+plot(ann_model1)
+
+ann_predict <- compute(ann_model1, pokemon_norm_ann)
+
+ann_predict$net.result <- as.factor(ifelse(ann_predict$net.result > 0.5, 1, 0))
+
+ann_confusion <- confusionMatrix(ann_predict$net.result, as.factor(pokemon_norm$is_legendary))
+
+#DECISION TREE
+
+tree_model1 <- C5.0(is_legendary ~ ., data = pokemon_norm)
+
+plot(tree_model1)
+
+tree_predict <- predict(tree_model1, pokemon_norm)
+
+tree_predict <- as.factor(ifelse(as.numeric(as.character(tree_predict)) > 0.5, 1, 0))
+
+tree_confusion <- confusionMatrix(tree_predict, pokemon_norm$is_legendary)
+```
+
+Now, we are going to build a stacked model with all of the prediction vectors we have already created (Logistic Regression, KNN, ANN, Decision Tree)
+
+```{r}
+set.seed(1234)
+
+#Creating final data frame
+
+final_dataset <- data.frame(pokemon_norm$is_legendary, logit_predict, knn_model2, 
+                            ann_predict$net.result, tree_predict)
+
+setnames(final_dataset, c("pokemon_norm.is_legendary","logit_predict","knn_model2",
+                          "ann_predict.net.result","tree_predict"), 
+                        c("is_legendary","logistic","knn","ann","tree"))
+
+#Splitting data into test and train
+
+test_set <- sample(1:nrow(final_dataset), round(0.3 * nrow(final_dataset)))
+
+final_train <- final_dataset[-test_set, ]
+final_test <- final_dataset[test_set, ]
+
+#Building the final model
+
+final_model <- C5.0(is_legendary ~ ., data = final_train)
+
+final_model_prediction <- predict(final_model, final_test)
+
+final_confusion <- confusionMatrix(final_model_prediction, final_test$is_legendary)
+```
+
+Now, let's compare the models:
+
+```{r}
+log_confusion
+knn_confusion2
+ann_confusion
+tree_confusion
+final_confusion
+
+comparing_models <- data.frame(c("log", "knn","ann","tree","final"),
+                              c(log_confusion$overall["Kappa"], knn_confusion2$overall["Kappa"], ann_confusion$overall["Kappa"],
+                                tree_confusion$overall["Kappa"], final_confusion$overall["Kappa"]),
+                              c(log_confusion$overall["Accuracy"], knn_confusion2$overall["Accuracy"], ann_confusion$overall["Accuracy"],
+                                tree_confusion$overall["Accuracy"], final_confusion$overall["Accuracy"]))
+
+colnames(comparing_models) <- c("model", "kappa","accuracy")
+```
+
+As we can see, each initial model was pretty good. The Kappa and Accuracy for each model is below:
+
+```{r}
+comparing_models
+```
+
+Each model has a Kappa well above 85% which is already stellar model performance. Most of that can be attributed to the dataset; it's pretty obvious which pokemon are legendary and which aren't from the characteristics that were given which makes the prediction task straightforward for each model. The Kappa is far more important than the accuracy for each of the initial four models because there are so many non-legendaries that the accuracy is probably going to be pretty solid regardless of what type of model we run. What we're more interested in is the specificity (correctly identifying negatives) and sensitivity (correctly identifying positives). The Kappa will give us the specificity and sensitivity rolled into one metric.
+
+Diving deeper int each of the models, we see that the KNN model performs the worst at .866 Kappa, which is still very good. The log model is second-worst with a .930 Kappa and each of the Tree and ANN models have a Kappa over .97 which is incredibly good. When we roll all of the models into one in the final model, we get a Kappa of 1.00 which means an accuracy of 1.00. This means that our model can flawlessly predict legendary status among pokemon. This clearly does not have a ton of real-world application since ability to predict legendary status does not allow us to exploit some sort of pokemon market inefficiency, but the value of this exercise is that a stacked model is more effective in prediction than any one model on its own. 
+
